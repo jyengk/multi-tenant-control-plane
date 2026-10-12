@@ -1,0 +1,83 @@
+# Boot everything:   docker compose up --build
+# Run the tests:     docker compose --profile test run --rm --build test
+# Stop:              docker compose down          (add -v to also delete the DB volume)
+#
+# Credentials below are local-development defaults, overridable via a .env
+# file (see .env.example). They are not secrets.
+
+name: control-plane
+
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  image: control-plane:local
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-controlplane}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-controlplane}
+      POSTGRES_DB: ${POSTGRES_DB:-controlplane}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # tenants survive restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-controlplane}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-controlplane}
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # management UI → http://localhost:15672
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  control-plane:
+    <<: *app
+    command: ["--addr=:8080"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-controlplane}:${POSTGRES_PASSWORD:-controlplane}@postgres:5432/${POSTGRES_DB:-controlplane}?sslmode=disable
+      AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    entrypoint: ["worker"]
+    environment:
+      AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/
+      # Change these and run `docker compose up -d worker` to restart with new behaviour.
+      WORKER_FAIL_RATE: ${WORKER_FAIL_RATE:-0}
+      WORKER_MIN_DELAY_MS: ${WORKER_MIN_DELAY_MS:-500}
+      WORKER_MAX_DELAY_MS: ${WORKER_MAX_DELAY_MS:-3000}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # Only started with --profile test. Uses the Dockerfile's test stage.
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+
+volumes:
+  pgdata:
