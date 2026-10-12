@@ -132,7 +132,7 @@ sequenceDiagram
     participant TU as Task update consumer
 
     C->>API: POST /v1/tenants {slug, name}
-    API->>DB: BEGIN; INSERT tenant (provisioning)<br/>INSERT task (deploy, accepted, published_at NULL); COMMIT
+    API->>DB: BEGIN<br/>INSERT tenant (provisioning)<br/>INSERT task (deploy, accepted, published_at NULL)<br/>COMMIT
     API-->>C: 202 {tenant, task}
     API--)R: nudge (non-blocking)
 
