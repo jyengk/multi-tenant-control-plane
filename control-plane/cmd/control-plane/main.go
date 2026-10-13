@@ -1,10 +1,13 @@
 // Command control-plane runs the HTTP API.
 //
-// Current stage: routes and middleware only. Handlers return 501 until they
-// are implemented; nothing is persisted and no broker is used.
+// Current stage: the API reads and writes tenants and tasks in Postgres.
+// Tasks are written to the outbox (published_at NULL) but not yet published:
+// the outbox relay comes next.
 //
-//	go run ./cmd/control-plane              # listens on :8080
-//	go run ./cmd/control-plane --addr=:9090
+// Needs DATABASE_URL (compose sets it). AMQP_URL is optional for now.
+//
+//	DATABASE_URL=postgres://controlplane:controlplane@localhost:5432/controlplane?sslmode=disable \
+//	  go run ./cmd/control-plane
 package main
 
 import (
@@ -20,6 +23,7 @@ import (
 
 	"controlplane/internal/api"
 	"controlplane/internal/broker"
+	"controlplane/internal/store"
 )
 
 func main() {
@@ -57,15 +61,34 @@ func run() error {
 		slog.Warn("AMQP_URL not set; running without RabbitMQ")
 	}
 
+	// Postgres is required: every API call reads or writes it. Connect and
+	// apply the embedded schema BEFORE serving, so no request can ever hit a
+	// database without its tables.
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		return errors.New("DATABASE_URL is required")
+	}
+	pool, err := store.Open(ctx, dbURL)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil // shut down while waiting for the database
+		}
+		return err
+	}
+	defer pool.Close()
+
+	// The Postgres store implements api.Service: this is what the handlers'
+	// h.svc.CreateTenant(...) etc. call.
+	svc := store.New(pool)
+	ready := api.ReadyFunc(pool.Ping) // /readyz reports 503 if the database goes away
+
 	// TODO (later steps):
-	//   - connect to Postgres, run migrations     → store implementing api.Service
 	//   - start outbox relay goroutine            (tasks → broker, uses broker.Publisher)
 	//   - start task update consumer goroutine    (task-updates → DB, uses broker.Consume)
-	var svc api.Service // nil until the store exists; handlers don't use it yet
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           api.NewHandler(svc, nil),
+		Handler:           api.NewHandler(svc, ready),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build: compile both binaries -------------------------------------------
-    FROM golang:1.24-bookworm AS build
+    FROM golang:1.25-bookworm AS build
     WORKDIR /src
     
     # Dependencies first, so this layer is cached until go.mod/go.sum change.
