@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"controlplane/internal/api"
+	"controlplane/internal/broker"
 )
 
 func main() {
@@ -38,11 +39,28 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// RabbitMQ: connect and declare queues in the background, so the API is
+	// up even while the broker is still starting (or down).
+	if url := os.Getenv("AMQP_URL"); url != "" {
+		go func() {
+			conn, _, err := broker.Setup(ctx, url)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Error("rabbitmq setup failed", "err", err)
+				}
+				return
+			}
+			<-ctx.Done()
+			_ = conn.Close()
+		}()
+	} else {
+		slog.Warn("AMQP_URL not set; running without RabbitMQ")
+	}
+
 	// TODO (later steps):
 	//   - connect to Postgres, run migrations     → store implementing api.Service
-	//   - connect to RabbitMQ                     → broker
-	//   - start outbox relay goroutine            (tasks → broker)
-	//   - start progress consumer goroutine       (worker updates → DB)
+	//   - start outbox relay goroutine            (tasks → broker, uses broker.Publisher)
+	//   - start task update consumer goroutine    (task-updates → DB, uses broker.Consume)
 	var svc api.Service // nil until the store exists; handlers don't use it yet
 
 	srv := &http.Server{
@@ -50,6 +68,12 @@ func run() error {
 		Handler:           api.NewHandler(svc, nil),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// Provided by compose; not used until the store and broker exist. Log
+	// only whether they are set: the URLs contain credentials.
+	slog.Info("config",
+		"database_configured", os.Getenv("DATABASE_URL") != "",
+		"amqp_configured", os.Getenv("AMQP_URL") != "")
 
 	errCh := make(chan error, 1)
 	go func() {

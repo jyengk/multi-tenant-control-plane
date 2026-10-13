@@ -1,8 +1,8 @@
 // Command worker simulates provisioning: it will consume tasks from the
 // broker, report in_progress, wait, then report done or failed.
 //
-// Current stage: skeleton. It reads its configuration, logs it, and waits
-// for a shutdown signal; it does not connect to RabbitMQ yet.
+// Current stage: connects to RabbitMQ and declares the queues, then waits
+// for a shutdown signal; it does not process tasks yet.
 //
 // Every flag can also be set by environment variable (flag wins):
 //
@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,8 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+
+	"controlplane/internal/broker"
 )
 
 type config struct {
@@ -52,14 +55,27 @@ func run() error {
 		"fail_rate", cfg.FailRate, "min_delay_ms", cfg.MinDelayMS, "max_delay_ms", cfg.MaxDelayMS,
 		"amqp_configured", cfg.AMQPURL != "") // never log the URL itself: it contains credentials
 
+	if cfg.AMQPURL == "" {
+		return errors.New("AMQP_URL (or --amqp-url) is required")
+	}
+	// The worker can't do anything without the broker, so it blocks here
+	// (retrying with backoff) until RabbitMQ is reachable.
+	conn, _, err := broker.Setup(ctx, cfg.AMQPURL)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil // shut down while waiting for the broker
+		}
+		return err
+	}
+	defer conn.Close()
+
 	// TODO (later steps):
-	//   - connect to RabbitMQ (reconnect with backoff)
-	//   - consume "tasks"; for each task:
-	//       publish {update_id, task_id, in_progress} to "task-updates"
+	//   - broker.Consume(ch, broker.QueueTasks, ...); for each task:
+	//       publish {update_id, task_id, in_progress} to broker.QueueTaskUpdates
 	//       sleep random(min, max)
-	//       publish done or failed (fail-rate) to "task-updates"
+	//       publish done or failed (fail-rate) to broker.QueueTaskUpdates
 	//       ack the task
-	slog.Info("worker idle: broker integration not implemented yet")
+	slog.Info("worker connected; task processing not implemented yet")
 
 	<-ctx.Done()
 	slog.Info("worker shutting down")
