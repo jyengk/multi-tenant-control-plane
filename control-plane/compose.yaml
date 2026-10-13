@@ -33,6 +33,9 @@ services:
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
+    hostname: rabbitmq
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq 
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-controlplane}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-controlplane}
@@ -81,3 +84,4 @@ services:
 
 volumes:
   pgdata:
+  rabbitmqdata:

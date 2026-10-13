@@ -1,10 +1,11 @@
 // Command control-plane runs the HTTP API.
 //
-// Current stage: the API reads and writes tenants and tasks in Postgres.
-// Tasks are written to the outbox (published_at NULL) but not yet published:
-// the outbox relay comes next.
+// One process, three components:
+//   - HTTP API: reads/writes tenants and tasks in Postgres
+//   - outbox relay: publishes committed tasks to the "tasks" queue
+//   - task update consumer: applies worker progress from "task-updates"
 //
-// Needs DATABASE_URL (compose sets it). AMQP_URL is optional for now.
+// Needs DATABASE_URL (compose sets it). Without AMQP_URL, only the API runs.
 //
 //	DATABASE_URL=postgres://controlplane:controlplane@localhost:5432/controlplane?sslmode=disable \
 //	  go run ./cmd/control-plane
@@ -18,11 +19,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"controlplane/internal/api"
-	"controlplane/internal/broker"
+	"controlplane/internal/consumer"
+	"controlplane/internal/outbox"
 	"controlplane/internal/store"
 )
 
@@ -42,24 +45,6 @@ func run() error {
 	// Cancelled on Ctrl-C or SIGTERM (docker stop).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	// RabbitMQ: connect and declare queues in the background, so the API is
-	// up even while the broker is still starting (or down).
-	if url := os.Getenv("AMQP_URL"); url != "" {
-		go func() {
-			conn, _, err := broker.Setup(ctx, url)
-			if err != nil {
-				if ctx.Err() == nil {
-					slog.Error("rabbitmq setup failed", "err", err)
-				}
-				return
-			}
-			<-ctx.Done()
-			_ = conn.Close()
-		}()
-	} else {
-		slog.Warn("AMQP_URL not set; running without RabbitMQ")
-	}
 
 	// Postgres is required: every API call reads or writes it. Connect and
 	// apply the embedded schema BEFORE serving, so no request can ever hit a
@@ -82,9 +67,30 @@ func run() error {
 	svc := store.New(pool)
 	ready := api.ReadyFunc(pool.Ping) // /readyz reports 503 if the database goes away
 
-	// TODO (later steps):
-	//   - start outbox relay goroutine            (tasks → broker, uses broker.Publisher)
-	//   - start task update consumer goroutine    (task-updates → DB, uses broker.Consume)
+	// Outbox relay: publishes committed tasks to RabbitMQ. It connects (and
+	// reconnects) in the background, so the API is up even while the broker
+	// is starting or down; tasks simply wait in the outbox meanwhile.
+	var wg sync.WaitGroup
+	if amqpURL := os.Getenv("AMQP_URL"); amqpURL != "" {
+		relay := outbox.New(pool, amqpURL, outbox.Config{})
+		svc.OnTaskCommitted(relay.Nudge) // publish within ms of commit, not at the next poll
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			relay.Run(ctx)
+		}()
+
+		// Task update consumer: applies worker progress (task-updates) to
+		// tasks and tenants. Same lifecycle as the relay.
+		updates := consumer.New(svc, amqpURL)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			updates.Run(ctx)
+		}()
+	} else {
+		slog.Warn("AMQP_URL not set; tasks stay in the outbox and no updates are consumed")
+	}
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -92,8 +98,7 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Provided by compose; not used until the store and broker exist. Log
-	// only whether they are set: the URLs contain credentials.
+	// Log only whether these are set: the URLs contain credentials.
 	slog.Info("config",
 		"database_configured", os.Getenv("DATABASE_URL") != "",
 		"amqp_configured", os.Getenv("AMQP_URL") != "")
@@ -116,5 +121,7 @@ func run() error {
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx) // finish in-flight requests
+	wg.Wait()                       // let the relay and consumer finish their current work
+	return err
 }

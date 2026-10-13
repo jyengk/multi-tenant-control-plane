@@ -22,11 +22,24 @@ import (
 // matches zero rows. No application-level locks are needed, and it stays
 // correct across replicas.
 type Store struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	onCommit func() // called after a task is committed (wakes the outbox relay)
 }
 
 // New returns a Store backed by pool.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+
+// OnTaskCommitted registers fn to run after every committed task insert.
+// main wires the outbox relay's Nudge here, so new tasks are published in
+// milliseconds instead of waiting for the relay's next poll. It runs AFTER
+// commit, never inside the transaction.
+func (s *Store) OnTaskCommitted(fn func()) { s.onCommit = fn }
+
+func (s *Store) notify() {
+	if s.onCommit != nil {
+		s.onCommit()
+	}
+}
 
 // SQLSTATE codes we branch on.
 const sqlUniqueViolation = "23505"
@@ -63,6 +76,9 @@ func (s *Store) CreateTenant(ctx context.Context, in domain.CreateTenantInput) (
 		task, err = insertTask(ctx, tx, tr.TaskType, tenant.ID)
 		return err
 	})
+	if err == nil {
+		s.notify()
+	}
 	return tenant, task, err
 }
 
@@ -109,6 +125,9 @@ func (s *Store) transition(ctx context.Context, id uuid.UUID, op domain.Operatio
 		task, err = insertTask(ctx, tx, tr.TaskType, tenant.ID)
 		return err
 	})
+	if err == nil {
+		s.notify()
+	}
 	return tenant, task, err
 }
 

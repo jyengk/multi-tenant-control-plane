@@ -1,15 +1,14 @@
-// Command worker simulates provisioning: it will consume tasks from the
-// broker, report in_progress, wait, then report done or failed.
-//
-// Current stage: connects to RabbitMQ and declares the queues, then waits
-// for a shutdown signal; it does not process tasks yet.
+// Command worker simulates provisioning: it consumes tasks from the "tasks"
+// queue and, for each, publishes in_progress, waits a random delay, then
+// publishes done or failed on "task-updates". See internal/worker.
 //
 // Every flag can also be set by environment variable (flag wins):
 //
 //	--amqp-url       AMQP_URL
 //	--fail-rate      WORKER_FAIL_RATE      probability 0..1 that a task fails
-//	--min-delay-ms   WORKER_MIN_DELAY_MS   minimum simulated work per step
-//	--max-delay-ms   WORKER_MAX_DELAY_MS   maximum simulated work per step
+//	--min-delay-ms   WORKER_MIN_DELAY_MS   minimum simulated work per task
+//	--max-delay-ms   WORKER_MAX_DELAY_MS   maximum simulated work per task
+//	--concurrency    WORKER_CONCURRENCY    tasks processed at once
 package main
 
 import (
@@ -22,15 +21,17 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
-	"controlplane/internal/broker"
+	"controlplane/internal/worker"
 )
 
 type config struct {
-	AMQPURL    string
-	FailRate   float64
-	MinDelayMS int
-	MaxDelayMS int
+	AMQPURL     string
+	FailRate    float64
+	MinDelayMS  int
+	MaxDelayMS  int
+	Concurrency int
 }
 
 func main() {
@@ -51,34 +52,24 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("worker started",
-		"fail_rate", cfg.FailRate, "min_delay_ms", cfg.MinDelayMS, "max_delay_ms", cfg.MaxDelayMS,
-		"amqp_configured", cfg.AMQPURL != "") // never log the URL itself: it contains credentials
-
 	if cfg.AMQPURL == "" {
 		return errors.New("AMQP_URL (or --amqp-url) is required")
 	}
-	// The worker can't do anything without the broker, so it blocks here
-	// (retrying with backoff) until RabbitMQ is reachable.
-	conn, _, err := broker.Setup(ctx, cfg.AMQPURL)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil // shut down while waiting for the broker
-		}
-		return err
-	}
-	defer conn.Close()
+	slog.Info("worker started",
+		"fail_rate", cfg.FailRate, "min_delay_ms", cfg.MinDelayMS, "max_delay_ms", cfg.MaxDelayMS,
+		"concurrency", cfg.Concurrency) // never log the AMQP URL: it contains credentials
 
-	// TODO (later steps):
-	//   - broker.Consume(ch, broker.QueueTasks, ...); for each task:
-	//       publish {update_id, task_id, in_progress} to broker.QueueTaskUpdates
-	//       sleep random(min, max)
-	//       publish done or failed (fail-rate) to broker.QueueTaskUpdates
-	//       ack the task
-	slog.Info("worker connected; task processing not implemented yet")
+	// Blocks until ctx is cancelled (Ctrl-C / docker stop), reconnecting to
+	// RabbitMQ as needed, and lets in-flight tasks finish or requeue.
+	worker.New(worker.Config{
+		AMQPURL:     cfg.AMQPURL,
+		FailRate:    cfg.FailRate,
+		MinDelay:    time.Duration(cfg.MinDelayMS) * time.Millisecond,
+		MaxDelay:    time.Duration(cfg.MaxDelayMS) * time.Millisecond,
+		Concurrency: cfg.Concurrency,
+	}).Run(ctx)
 
-	<-ctx.Done()
-	slog.Info("worker shutting down")
+	slog.Info("worker stopped")
 	return nil
 }
 
@@ -97,11 +88,16 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	concurrency, err := envInt("WORKER_CONCURRENCY", 10)
+	if err != nil {
+		return cfg, err
+	}
 
 	flag.StringVar(&cfg.AMQPURL, "amqp-url", os.Getenv("AMQP_URL"), "RabbitMQ connection URL")
 	flag.Float64Var(&cfg.FailRate, "fail-rate", failRate, "probability (0..1) that a task fails")
-	flag.IntVar(&cfg.MinDelayMS, "min-delay-ms", minDelay, "minimum delay per step, ms")
-	flag.IntVar(&cfg.MaxDelayMS, "max-delay-ms", maxDelay, "maximum delay per step, ms")
+	flag.IntVar(&cfg.MinDelayMS, "min-delay-ms", minDelay, "minimum simulated work per task, ms")
+	flag.IntVar(&cfg.MaxDelayMS, "max-delay-ms", maxDelay, "maximum simulated work per task, ms")
+	flag.IntVar(&cfg.Concurrency, "concurrency", concurrency, "tasks processed at once")
 	flag.Parse()
 
 	switch {
@@ -109,6 +105,8 @@ func loadConfig() (config, error) {
 		return cfg, fmt.Errorf("fail-rate must be between 0 and 1, got %v", cfg.FailRate)
 	case cfg.MinDelayMS < 0 || cfg.MaxDelayMS < cfg.MinDelayMS:
 		return cfg, fmt.Errorf("need 0 <= min-delay-ms <= max-delay-ms, got %d..%d", cfg.MinDelayMS, cfg.MaxDelayMS)
+	case cfg.Concurrency < 1:
+		return cfg, fmt.Errorf("concurrency must be >= 1, got %d", cfg.Concurrency)
 	}
 	return cfg, nil
 }
