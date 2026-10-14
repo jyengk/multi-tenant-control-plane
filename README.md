@@ -141,9 +141,9 @@ sequenceDiagram
     API--)R: nudge (non-blocking, after commit)
     API-->>C: 202 {tenant, task}
 
-    R->>DB: BEGIN; SELECT unpublished tasks ORDER BY id<br/>LIMIT 100 FOR UPDATE SKIP LOCKED
+    R->>DB: BEGIN<br/>SELECT unpublished tasks ORDER BY id<br/>LIMIT 100 FOR UPDATE SKIP LOCKED
     R->>QT: publish each task (await broker confirm)
-    R->>DB: UPDATE published_at = now() (confirmed only); COMMIT
+    R->>DB: UPDATE published_at = now() (confirmed only)<br/>COMMIT
 
     QT->>W: deliver task
     W--)QU: publish {update_id, task_id, in_progress}
