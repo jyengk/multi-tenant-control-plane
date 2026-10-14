@@ -27,11 +27,10 @@ order-tolerantly. A worker simulator drives tasks through their lifecycle.
 
 ## Quick start
 
-**Prerequisite:** Docker with Compose v2. Nothing else (no Go toolchain, no
-`make`) is needed on the host.
+**Prerequisite:** Docker with Compose v2. Go only for the optional E2E suite is needed on the host.
 
 ```bash
-git clone <repo-url> && cd multi-tenant-control-plane/control-plane
+git clone <repo-url> && cd <repo>/control-plane
 docker compose up --build                             # boot: Postgres, RabbitMQ, control-plane, worker
 docker compose --profile test run --rm --build test   # full suite: format check, lint, security scan, tests
 ```
@@ -139,12 +138,12 @@ sequenceDiagram
 
     C->>API: POST /v1/tenants {slug, name}
     API->>DB: BEGIN<br/>INSERT tenant (provisioning)<br/>INSERT task (deploy, accepted, published_at NULL)<br/>COMMIT
+    API--)R: nudge (non-blocking, after commit)
     API-->>C: 202 {tenant, task}
-    API--)R: nudge (non-blocking)
 
-    R->>DB: SELECT unpublished tasks ORDER BY id<br/>FOR UPDATE SKIP LOCKED
-    R->>QT: publish task (await broker confirm)
-    R->>DB: SET published_at = now()
+    R->>DB: BEGIN; SELECT unpublished tasks ORDER BY id<br/>LIMIT 100 FOR UPDATE SKIP LOCKED
+    R->>QT: publish each task (await broker confirm)
+    R->>DB: UPDATE published_at = now() (confirmed only); COMMIT
 
     QT->>W: deliver task
     W--)QU: publish {update_id, task_id, in_progress}
@@ -155,7 +154,7 @@ sequenceDiagram
 
     loop each update, independently of the worker
         QU->>TU: deliver update
-        TU->>DB: one transaction:<br/>insert update_id (idempotency key)<br/>forward-only task status change<br/>if terminal: tenant status + version+1
+        TU->>DB: one transaction:<br/>lock task FOR UPDATE<br/>skip if update_id already seen (duplicate)<br/>forward-only status change, else stale_ignored<br/>if terminal: tenant status + version+1<br/>record update_id
         TU->>QU: ack (only after commit)
     end
 
