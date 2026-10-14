@@ -44,10 +44,10 @@ docker compose up --build                             # boot: Postgres, RabbitMQ
 docker compose --profile test run --rm --build test   # full suite: format check, lint, security scan, tests
 ```
 
-| Service       | URL                                                         |
-| ------------- | ----------------------------------------------------------- |
-| API           | http://localhost:8080                                       |
-| RabbitMQ UI   | http://localhost:15672 (credentials in `.env.example`)      |
+| Service       | URL                                                                 |
+| ------------- | ------------------------------------------------------------------- |
+| API           | http://localhost:8080                                               |
+| RabbitMQ UI   | http://localhost:15672 (default credentials in `.env.example`)      |
 
 Credentials in `.env.example` are local-development defaults, not secrets.
 
