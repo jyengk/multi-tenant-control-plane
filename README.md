@@ -31,7 +31,7 @@ order-tolerantly. A worker simulator drives tasks through their lifecycle.
 `make`) is needed on the host.
 
 ```bash
-git clone <repo-url> && cd <repo>
+git clone <repo-url> && cd multi-tenant-control-plane/control-plane
 docker compose up --build                             # boot: Postgres, RabbitMQ, control-plane, worker
 docker compose --profile test run --rm --build test   # full suite: format check, lint, security scan, tests
 ```
@@ -57,8 +57,7 @@ Credentials in `.env.example` are local-development defaults, not secrets.
 | Language            | Go 1.25                                                   | Static binary, small distroless image, first-class concurrency                      |
 | HTTP routing        | `net/http` `ServeMux` (Go 1.22+ patterns)                 | Method + wildcard routing with zero dependencies                                    |
 | Database            | PostgreSQL 17                                             | Transactions, `UNIQUE`/`CHECK` constraints, `FOR UPDATE SKIP LOCKED`                |
-| DB driver           | `jackc/pgx/v5` + `pgxpool`                                | Fast, idiomatic, exposes SQLSTATE codes (e.g. `23505` for unique violations)        |
-| Migrations          | `pressly/goose`, embedded, run on startup                 | Schema always matches the binary; no manual step                                    |
+| DB driver           | `jackc/pgx/v5` + `pgxpool`                                | Fast, idiomatic, exposes SQLSTATE codes (e.g. `23505` for unique violations)        |                               |
 | Broker              | RabbitMQ 4.x (management image)                           | Work-queue semantics, per-message ack/nack, native dead-lettering                   |
 | AMQP client         | `rabbitmq/amqp091-go`                                     | Official client; publisher confirms                                                 |
 | IDs                 | `google/uuid` (UUIDv7)                                    | App-generated (task ID exists before commit), time-ordered (index-friendly, cursor) |
