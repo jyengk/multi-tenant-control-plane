@@ -81,7 +81,7 @@ flowchart LR
     subgraph cp["control-plane (one process)"]
         api["HTTP API"]
         relay["Outbox relay"]
-        consumer["Progress consumer"]
+        consumer["Task update consumer"]
     end
 
     db[("PostgreSQL<br/>tenants · tasks · processed_messages")]
@@ -103,6 +103,7 @@ flowchart LR
     qu --> consumer
     consumer -- "apply update<br/>idempotent, forward-only" --> db
     consumer -. "poison messages" .-> dlq
+    worker -. "poison messages" .-> dlq
 ```
 
 
@@ -112,11 +113,11 @@ control-plane and worker are two entrypoints of **one image**. Inside the
 control-plane process, three components run as goroutines sharing one DB pool:
 
 
-| Component         | Responsibility                                                        |
-| ----------------- | --------------------------------------------------------------------- |
-| HTTP API          | Validates requests, writes tenant + task in one transaction           |
-| Outbox relay      | Publishes committed, unpublished tasks to RabbitMQ in creation order  |
-| Progress consumer | Applies worker updates to tasks (and to tenants on terminal outcomes) |
+| Component            | Responsibility                                                        |
+| ---------------------| --------------------------------------------------------------------- |
+| HTTP API             | Validates requests, writes tenant + task in one transaction           |
+| Outbox relay         | Publishes committed, unpublished tasks to RabbitMQ in creation order  |
+| Task update consumer | Applies worker updates to tasks (and to tenants on terminal outcomes) |
 
 
 
@@ -634,11 +635,11 @@ The same settings exist as CLI flags: `--fail-rate`, `--min-delay-ms`, `--max-de
 ## Messaging
 
 
-| Queue                           | Direction              | Producer     | Consumer           |
-| ------------------------------- | ---------------------- | ------------ | ------------------ |
-| `tasks`                         | control-plane → worker | Outbox relay | Worker simulator   |
-| `task-updates`                  | worker → control-plane | Worker       | Progress consumer  |
-| `tasks.dlq`, `task-updates.dlq` | dead letters           | —            | Inspected manually |
+| Queue                           | Direction              | Producer     | Consumer              |
+| ------------------------------- | ---------------------- | ------------ | --------------------- |
+| `tasks`                         | control-plane → worker | Outbox relay | Worker simulator      |
+| `task-updates`                  | worker → control-plane | Worker       | Task update consumer  |
+| `tasks.dlq`, `task-updates.dlq` | dead letters           | —            | Inspected manually    |
 
 
 All queues and messages are durable/persistent.
@@ -829,7 +830,7 @@ table.
 
 ```
 cmd/
-  control-plane/        main: API + outbox relay + progress consumer
+  control-plane/        main: API + outbox relay + Task update consumer
   worker/               main: worker simulator
 internal/
   domain/               state machines, entities, errors, validation (pure, no I/O)
