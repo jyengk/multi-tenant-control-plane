@@ -626,11 +626,6 @@ The same settings exist as CLI flags: `--fail-rate`, `--min-delay-ms`, `--max-de
 
 
 
-
-### Automated equivalents
-
-`scripts/e2e.sh` runs all scenarios in sections 1–2 as tests (lifecycle, transition matrices, duplicates, out-of-order, poison, concurrency) and exits non-zero on any failure.
-
 ---
 
 
