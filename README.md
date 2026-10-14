@@ -422,9 +422,14 @@ version, so "not allowed" is the more useful answer.
 
 ### Running the E2E tests
 
-**Prerequisites:** Docker with Compose v2, curl, and **Go** (the version in `go.mod`).
-Go is only needed for the E2E suite; everything else runs in containers.
-
+**Prerequisites:** 
+- Docker with Compose v2 and curl.
+- The stack running in the background for the whole session:
+  `docker compose up -d --build`. The scripts restart only the worker with the
+  settings they need and put it back afterwards. Stop everything when you're
+  done with `docker compose down`.
+- Go (the version in `go.mod`), only for sections 2 and 3, which run through
+  `scripts/e2e.sh`.
 **One-time setup** (from the repo root):
 
 ```bash
