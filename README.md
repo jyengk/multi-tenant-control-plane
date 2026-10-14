@@ -9,12 +9,12 @@ order-tolerantly. A worker simulator drives tasks through their lifecycle.
 >
 > - [x] Domain state machines + exhaustive tests (`internal/domain`)
 > - [x] HTTP API skeleton: routes, middleware, error format, route test (`internal/api`)
-> - [ ] HTTP handlers: decode, validate, call service, respond (currently 501 stubs)
-> - [ ] Store: migrations, pgx repositories, conditional UPDATEs, concurrency tests
-> - [ ] Outbox relay
-> - [ ] Worker simulator
-> - [ ] Progress consumer (idempotency, ordering, DLQ)
-> - [ ] Dockerfile, `compose.yaml`, quality gates
+> - [x] HTTP handlers: decode, validate, call service, respond (currently 501 stubs)
+> - [x] Store: migrations, pgx repositories, conditional UPDATEs, concurrency tests
+> - [x] Outbox relay
+> - [x] Worker simulator
+> - [x] Progress consumer (idempotency, ordering, DLQ)
+> - [x] Dockerfile, `compose.yaml`, quality gates
 > - [ ] Negative-scenario scripts
 
 ---
