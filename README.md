@@ -5,18 +5,6 @@ emits provisioning tasks to a message broker **after** the database commit
 (transactional outbox), and consumes worker progress updates idempotently and
 order-tolerantly. A worker simulator drives tasks through their lifecycle.
 
-> **Build status** (remove before submission)
->
-> - [x] Domain state machines + exhaustive tests (`internal/domain`)
-> - [x] HTTP API skeleton: routes, middleware, error format, route test (`internal/api`)
-> - [x] HTTP handlers: decode, validate, call service, respond (currently 501 stubs)
-> - [x] Store: pgx repositories, conditional UPDATEs, concurrency tests
-> - [x] Outbox relay
-> - [x] Worker simulator
-> - [x] Progress consumer (idempotency, ordering, DLQ)
-> - [x] Dockerfile, `compose.yaml`, quality gates
-> - [ ] Negative-scenario scripts
-
 ---
 
 
