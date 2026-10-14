@@ -93,8 +93,9 @@ func run() error {
 	}
 
 	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           api.NewHandler(svc, ready),
+		Addr: *addr,
+		// CORS is off unless CORS_ALLOWED_ORIGIN is set (e.g. for Swagger UI).
+		Handler:           api.CORS(os.Getenv("CORS_ALLOWED_ORIGIN"), api.NewHandler(svc, ready)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

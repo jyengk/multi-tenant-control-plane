@@ -1,0 +1,444 @@
+openapi: 3.0.3
+info:
+  title: Tenant Provisioning Control Plane
+  version: 1.0.0
+  description: |
+    Records tenants and drives their lifecycle through asynchronous tasks.
+
+    **Mutations are asynchronous.** `POST`, `PATCH` and `DELETE` on a tenant
+    return `202 Accepted` with the tenant's new state and the task that will
+    carry out the change. A worker processes the task in the background; poll
+    `GET /v1/tenants/{id}` or `GET /v1/tasks/{id}` to follow progress.
+
+    **Tenant lifecycle**
+
+    | From | Operation / outcome | To |
+    |---|---|---|
+    | — | `POST` | `provisioning` |
+    | `provisioning` | deploy done / failed | `active` / `failed` |
+    | `active` | `PATCH` | `updating` |
+    | `updating` | update done / failed | `active` / `failed` |
+    | `active`, `failed` | `DELETE` | `destroying` |
+    | `destroying` | destroy done / failed | `destroyed` / `failed` |
+
+    Any other `PATCH` or `DELETE` returns `409 tenant_update_not_allowed`.
+
+    **Errors** always use the same shape (see `Error`), and the `code` is a
+    stable contract a client can branch on.
+
+    **Timestamps** are ISO 8601 UTC with milliseconds, e.g. `2026-10-14T06:10:00.123Z`.
+servers:
+  - url: http://localhost:8080
+    description: Local (docker compose)
+tags:
+  - name: Tenants
+    description: Full CRUD. Every mutation creates a task.
+  - name: Tasks
+    description: Read-only. Created by tenant calls, driven by the worker.
+  - name: Health
+
+paths:
+  /v1/tenants:
+    post:
+      tags: [Tenants]
+      summary: Create a tenant
+      description: |
+        Creates the tenant in `provisioning` (version 1) and a `deploy` task in
+        `accepted`, in one transaction. The task is published to the worker
+        after the commit.
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTenantRequest' }
+            example: { slug: acme-eu, name: Acme Corporation (EU) }
+      responses:
+        '202':
+          description: Accepted; provisioning has started.
+          headers:
+            Location:
+              description: URL of the new tenant.
+              schema: { type: string, example: /v1/tenants/0192f3a1-7c2e-7b4d-9f10-3a5c8e2d1b44 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409':
+          description: Slug already taken (including by a destroyed tenant).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: tenant_already_exists, message: a tenant with this slug already exists }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [Tenants]
+      summary: List tenants
+      description: Keyset-paginated in creation order. Pass `next_cursor` from the previous page as `cursor`.
+      operationId: listTenants
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TenantStatus' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of tenants.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantPage' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/tenants/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TenantID'
+    get:
+      tags: [Tenants]
+      summary: Get a tenant
+      operationId: getTenant
+      responses:
+        '200':
+          description: The tenant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      tags: [Tenants]
+      summary: Update a tenant (partial)
+      description: |
+        Only allowed while the tenant is `active`. `version` is required
+        (optimistic locking): send the version you last read. Only `name` can
+        change; `slug` is immutable.
+
+        Error precedence: `tenant_not_found` → `tenant_update_not_allowed` →
+        `tenant_version_conflict`.
+      operationId: updateTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateTenantRequest' }
+            example: { version: 2, name: Acme Europe }
+      responses:
+        '202':
+          description: Accepted; the tenant is now `updating`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: |
+            `tenant_update_not_allowed`: the tenant is not `active` (wait for it).
+            `tenant_version_conflict`: `version` is stale (refetch and retry).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                notAllowed:
+                  value: { error: { code: tenant_update_not_allowed, message: operation not allowed in the tenant's current status } }
+                versionConflict:
+                  value: { error: { code: tenant_version_conflict, message: tenant version does not match; refetch and retry } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Tenants]
+      summary: Delete a tenant
+      description: |
+        Allowed from `active` or `failed`. The tenant moves to `destroying`,
+        then `destroyed` when the worker finishes. The row is kept (and stays
+        readable) so its slug remains reserved.
+      operationId: deleteTenant
+      responses:
+        '202':
+          description: Accepted; the tenant is now `destroying`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationResponse' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409':
+          description: Not allowed in the tenant's current status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: tenant_update_not_allowed, message: operation not allowed in the tenant's current status }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks
+      operationId: listTasks
+      parameters:
+        - name: tenant_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TaskStatus' }
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/TaskType' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page of tasks.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskPage' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: Get a task
+      operationId: getTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '404':
+          description: Unknown or malformed task ID.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: task_not_found, message: task not found }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness
+      operationId: healthz
+      responses:
+        '200':
+          description: The process is up.
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { type: string, example: ok } } }
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness
+      description: 200 if the database is reachable, otherwise 503.
+      operationId: readyz
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { type: string, example: ready } } }
+        '503':
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: not_ready, message: dependency unavailable }
+
+components:
+  parameters:
+    TenantID:
+      name: id
+      in: path
+      required: true
+      description: Tenant ID. A malformed ID returns 404, like an unknown one.
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      description: Page size.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` value from the previous page.
+      schema: { type: string, format: uuid }
+
+  responses:
+    InvalidRequest:
+      description: Malformed JSON, unknown field, wrong type, or more than one JSON value.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: invalid_request, message: 'json: unknown field "plan"' }
+    ValidationError:
+      description: Well-formed request with invalid values; `details` lists each field.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: validation_error
+              message: request validation failed
+              details:
+                slug: must be 3-28 chars matching ^[a-z][-a-z0-9]{1,26}[a-z0-9]$
+                name: must not be empty
+    TenantNotFound:
+      description: Unknown or malformed tenant ID.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: tenant_not_found, message: tenant not found }
+    InternalError:
+      description: Unexpected failure. Details are logged, never returned.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: internal_error, message: internal server error }
+
+  schemas:
+    TenantStatus:
+      type: string
+      enum: [provisioning, active, updating, destroying, destroyed, failed]
+    TaskStatus:
+      type: string
+      enum: [accepted, in_progress, done, failed]
+    TaskType:
+      type: string
+      enum: [deploy, update, destroy]
+
+    CreateTenantRequest:
+      type: object
+      additionalProperties: false
+      required: [slug, name]
+      properties:
+        slug:
+          type: string
+          description: Kubernetes-namespace compatible; unique forever (including destroyed tenants); immutable.
+          pattern: '^[a-z][-a-z0-9]{1,26}[a-z0-9]$'
+          minLength: 3
+          maxLength: 28
+          example: acme-eu
+        name:
+          type: string
+          description: Display name; must not be blank.
+          minLength: 1
+          example: Acme Corporation (EU)
+
+    UpdateTenantRequest:
+      type: object
+      additionalProperties: false
+      required: [version, name]
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The tenant version you last read (optimistic locking).
+          example: 2
+        name:
+          type: string
+          minLength: 1
+          example: Acme Europe
+
+    Tenant:
+      type: object
+      required: [id, slug, name, status, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid, example: 0192f3a1-7c2e-7b4d-9f10-3a5c8e2d1b44 }
+        slug: { type: string, example: acme-eu }
+        name: { type: string, example: Acme Corporation (EU) }
+        status: { $ref: '#/components/schemas/TenantStatus' }
+        version:
+          type: integer
+          format: int64
+          description: Incremented on every change, including worker-applied ones.
+          example: 1
+        created_at: { type: string, format: date-time, example: '2026-10-14T06:10:00.123Z' }
+        updated_at: { type: string, format: date-time, example: '2026-10-14T06:10:00.123Z' }
+
+    Task:
+      type: object
+      required: [id, type, tenant_id, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid, example: 0192f3a1-7c2f-7000-8000-000000000001 }
+        type: { $ref: '#/components/schemas/TaskType' }
+        tenant_id: { type: string, format: uuid, example: 0192f3a1-7c2e-7b4d-9f10-3a5c8e2d1b44 }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        created_at: { type: string, format: date-time, example: '2026-10-14T06:10:00.123Z' }
+        updated_at: { type: string, format: date-time, example: '2026-10-14T06:10:00.123Z' }
+
+    MutationResponse:
+      type: object
+      description: The tenant's new state and the task that will carry out the change.
+      required: [tenant, task]
+      properties:
+        tenant: { $ref: '#/components/schemas/Tenant' }
+        task: { $ref: '#/components/schemas/Task' }
+
+    TenantPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Tenant' }
+        next_cursor:
+          type: string
+          format: uuid
+          nullable: true
+          description: Pass as `cursor` to get the next page; null on the last page.
+
+    TaskPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        next_cursor:
+          type: string
+          format: uuid
+          nullable: true
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable error code.
+              enum:
+                - tenant_not_found
+                - task_not_found
+                - tenant_already_exists
+                - tenant_update_not_allowed
+                - tenant_version_conflict
+                - validation_error
+                - invalid_request
+                - route_not_found
+                - method_not_allowed
+                - not_ready
+                - internal_error
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: { type: string }
+              description: Per-field reasons; present for validation errors only.
