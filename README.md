@@ -31,7 +31,7 @@ order-tolerantly. A worker simulator drives tasks through their lifecycle.
 `make`) is needed on the host.
 
 ```bash
-git clone <repo-url> && cd <repo>
+git clone <repo-url> && cd multi-tenant-control-plane/control-plane
 docker compose up --build                             # boot: Postgres, RabbitMQ, control-plane, worker
 docker compose --profile test run --rm --build test   # full suite: format check, lint, security scan, tests
 ```
