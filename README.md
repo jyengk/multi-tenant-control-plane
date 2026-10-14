@@ -57,7 +57,7 @@ Credentials in `.env.example` are local-development defaults, not secrets.
 
 | Concern               | Choice                                       | Why                                                                                   |
 | --------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Language              | Go 1.24                                      | Static binary, small distroless image, first-class concurrency                        |
+| Language              | Go 1.25                                      | Static binary, small distroless image, first-class concurrency                        |
 | HTTP routing          | `net/http` `ServeMux` (Go 1.22+ patterns)    | Method + wildcard routing with zero dependencies                                      |
 | Database              | PostgreSQL 17                                | Transactions, `UNIQUE`/`CHECK` constraints, `FOR UPDATE SKIP LOCKED`                  |
 | DB driver             | `jackc/pgx/v5` + `pgxpool`                   | Fast, idiomatic, exposes SQLSTATE codes (e.g. `23505` for unique violations)          |
